@@ -425,6 +425,8 @@ def parse_options():
                 "all dirs that don't start with a dot")
     option('-d', '--debug', action='store_true',
            help='print debug information')
+    option('--numpy', action='store_true',
+           help='check NumPy formatted docstrings')
     return parser.parse_args()
 
 
@@ -451,7 +453,7 @@ def collect(names, match=lambda name: True, match_dir=lambda name: True):
             yield name
 
 
-def check(filenames, ignore=()):
+def check(filenames, ignore=(), numpy=False):
     """Generate PEP 257 errors that exist in `filenames` iterable.
 
     Skips errors with error-codes defined in `ignore` iterable.
@@ -466,7 +468,11 @@ def check(filenames, ignore=()):
         try:
             with open(filename) as file:
                 source = file.read()
-            for error in PEP257Checker().check_source(source, filename):
+            if numpy:
+                checker = NumPyChecker()
+            else:
+                checker = PEP257Checker()
+            for error in checker.check_source(source, filename):
                 code = getattr(error, 'code', None)
                 if code is not None and code not in ignore:
                     yield error
@@ -486,7 +492,8 @@ def main(options, arguments):
                         match=re(options.match + '$').match,
                         match_dir=re(options.match_dir + '$').match)
     code = 0
-    for error in check(collected, ignore=options.ignore.split(',')):
+    for error in check(collected, ignore=options.ignore.split(','),
+                       numpy=options.numpy):
         sys.stderr.write('%s\n' % error)
         code = 1
     return code
@@ -503,16 +510,7 @@ def check_for(kind, terminal=False):
     return decorator
 
 
-class PEP257Checker(object):
-
-    """Checker for PEP 257.
-
-    D10x: Missing docstrings
-    D20x: Whitespace issues
-    D30x: Docstring formatting
-    D40x: Docstring content issues
-
-    """
+class Checker(object):
 
     def check_source(self, source, filename):
         module = parse(StringIO(source), filename)
@@ -543,26 +541,6 @@ class PEP257Checker(object):
                if hasattr(check, '_check_for')]
         return sorted(all, key=lambda check: not check._terminal)
 
-    @check_for(Definition, terminal=True)
-    def check_docstring_missing(self, definition, docstring):
-        """D10{0,1,2,3}: Public definitions should have docstrings.
-
-        All modules should normally have docstrings.  [...] all functions and
-        classes exported by a module should also have docstrings. Public
-        methods (including the __init__ constructor) should also have
-        docstrings.
-
-        Note: Public (exported) definitions are either those with names listed
-              in __all__ variable (if present), or those that do not start
-              with a single underscore.
-
-        """
-        if (not docstring and definition.is_public or
-                docstring and is_blank(eval(docstring))):
-            codes = {Module: 'D100', Class: 'D101', NestedClass: 'D101',
-                     Method: 'D102', Function: 'D103', NestedFunction: 'D103'}
-            return Error('%s: Docstring missing' % codes[type(definition)])
-
     @check_for(Definition)
     def check_one_liners(self, definition, docstring):
         """D200: One-liner docstrings should fit on one line with quotes.
@@ -578,63 +556,6 @@ class PEP257Checker(object):
                 if non_empty_lines == 1:
                     return Error('D200: One-line docstring should not occupy '
                                  '%s lines' % len(lines))
-
-    @check_for(Function)
-    def check_no_blank_before(self, function, docstring):  # def
-        """D20{1,2}: No blank lines allowed around function/method docstring.
-
-        There's no blank line either before or after the docstring.
-
-        """
-        # NOTE: This does not take comments into account.
-        # NOTE: This does not take into account functions with groups of code.
-        if docstring:
-            before, _, after = function.source.partition(docstring)
-            blanks_before = list(map(is_blank, before.split('\n')[:-1]))
-            blanks_after = list(map(is_blank, after.split('\n')[1:]))
-            blanks_before_count = sum(takewhile(bool, reversed(blanks_before)))
-            blanks_after_count = sum(takewhile(bool, blanks_after))
-            if blanks_before_count != 0:
-                yield Error('D201: No blank lines allowed *before* %s '
-                            'docstring, found %s'
-                            % (function.kind, blanks_before_count))
-            if not all(blanks_after) and blanks_after_count != 0:
-                yield Error('D202: No blank lines allowed *after* %s '
-                            'docstring, found %s'
-                            % (function.kind, blanks_after_count))
-
-    @check_for(Class)
-    def check_blank_before_after_class(slef, class_, docstring):
-        """D20{3,4}: Class docstring should have 1 blank line around them.
-
-        Insert a blank line before and after all docstrings (one-line or
-        multi-line) that document a class -- generally speaking, the class's
-        methods are separated from each other by a single blank line, and the
-        docstring needs to be offset from the first method by a blank line;
-        for symmetry, put a blank line between the class header and the
-        docstring.
-
-        """
-        # NOTE: this gives flase-positive in this case
-        # class Foo:
-        #
-        #     """Docstring."""
-        #
-        #
-        # # comment here
-        # def foo(): pass
-        if docstring:
-            before, _, after = class_.source.partition(docstring)
-            blanks_before = list(map(is_blank, before.split('\n')[:-1]))
-            blanks_after = list(map(is_blank, after.split('\n')[1:]))
-            blanks_before_count = sum(takewhile(bool, reversed(blanks_before)))
-            blanks_after_count = sum(takewhile(bool, blanks_after))
-            if blanks_before_count != 1:
-                yield Error('D203: Expected 1 blank line *before* class '
-                            'docstring, found %s' % blanks_before_count)
-            if not all(blanks_after) and blanks_after_count != 1:
-                yield Error('D204: Expected 1 blank line *after* class '
-                            'docstring, found %s' % blanks_after_count)
 
     @check_for(Definition)
     def check_blank_after_summary(self, definition, docstring):
@@ -675,21 +596,6 @@ class PEP257Checker(object):
                     return Error('D208: Docstring is over-indented')
                 if min(indents) < indent:
                     return Error('D207: Docstring is under-indented')
-
-    @check_for(Definition)
-    def check_newline_after_last_paragraph(self, definition, docstring):
-        """D209: Put multi-line docstring closing quotes on separate line.
-
-        Unless the entire docstring fits on a line, place the closing
-        quotes on a line by themselves.
-
-        """
-        if docstring:
-            lines = [l for l in eval(docstring).split('\n') if not is_blank(l)]
-            if len(lines) > 1:
-                if docstring.split("\n")[-1].strip() not in ['"""', "'''"]:
-                    return Error('D209: Put multi-line docstring closing '
-                                 'quotes on separate line')
 
     @check_for(Definition)
     def check_triple_double_quotes(self, definition, docstring):
@@ -753,23 +659,6 @@ class PEP257Checker(object):
                              % summary_line[-1])
 
     @check_for(Function)
-    def check_imperative_mood(self, function, docstring):  # def context
-        """D401: First line should be in imperative mood: 'Do', not 'Does'.
-
-        [Docstring] prescribes the function or method's effect as a command:
-        ("Do this", "Return that"), not as a description; e.g. don't write
-        "Returns the pathname ...".
-
-        """
-        if docstring:
-            stripped = eval(docstring).strip()
-            if stripped:
-                first_word = stripped.split()[0]
-                if first_word.endswith('s') and not first_word.endswith('ss'):
-                    return Error('D401: First line should be imperative: '
-                                 '%r, not %r' % (first_word[:-1], first_word))
-
-    @check_for(Function)
     def check_no_signature(self, function, docstring):  # def context
         """D402: First line should not be function's or method's "signature".
 
@@ -795,6 +684,229 @@ class PEP257Checker(object):
         if docstring and function.returns_value:
             if 'return' not in docstring.lower():
                 return Error()
+
+
+class PEP257Checker(Checker):
+
+    """Checker for PEP 257.
+
+    D10x: Missing docstrings
+    D20x: Whitespace issues
+    D30x: Docstring formatting
+    D40x: Docstring content issues
+
+    """
+
+    @check_for(Definition, terminal=True)
+    def check_docstring_missing(self, definition, docstring):
+        """D10{0,1,2,3}: Public definitions should have docstrings.
+
+        All modules should normally have docstrings.  [...] all functions and
+        classes exported by a module should also have docstrings. Public
+        methods (including the __init__ constructor) should also have
+        docstrings.
+
+        Note: Public (exported) definitions are either those with names listed
+              in __all__ variable (if present), or those that do not start
+              with a single underscore.
+
+        """
+        if (not docstring and definition.is_public or
+                docstring and is_blank(eval(docstring))):
+            codes = {Module: 'D100', Class: 'D101', NestedClass: 'D101',
+                     Method: 'D102', Function: 'D103', NestedFunction: 'D103'}
+            return Error('%s: Docstring missing' % codes[type(definition)])
+
+    @check_for(Function)
+    def check_no_blank_before(self, function, docstring):  # def
+        """D20{1,2}: No blank lines allowed around function/method docstring.
+
+        There's no blank line either before or after the docstring.
+
+        """
+        # NOTE: This does not take comments into account.
+        # NOTE: This does not take into account functions with groups of code.
+        if docstring:
+            before, _, after = function.source.partition(docstring)
+            blanks_before = list(map(is_blank, before.split('\n')[:-1]))
+            blanks_after = list(map(is_blank, after.split('\n')[1:]))
+            blanks_before_count = sum(takewhile(bool, reversed(blanks_before)))
+            blanks_after_count = sum(takewhile(bool, blanks_after))
+            if blanks_before_count != 0:
+                yield Error('D201: No blank lines allowed *before* %s '
+                            'docstring, found %s'
+                            % (function.kind, blanks_before_count))
+            if not all(blanks_after) and blanks_after_count != 0:
+                yield Error('D202: No blank lines allowed *after* %s '
+                            'docstring, found %s'
+                            % (function.kind, blanks_after_count))
+
+    @check_for(Class)
+    def check_blank_before_after_class(slef, class_, docstring):
+        """D20{3,4}: Class docstring should have 1 blank line around them.
+
+        Insert a blank line before and after all docstrings (one-line or
+        multi-line) that document a class -- generally speaking, the class's
+        methods are separated from each other by a single blank line, and the
+        docstring needs to be offset from the first method by a blank line;
+        for symmetry, put a blank line between the class header and the
+        docstring.
+
+        """
+        # NOTE: this gives flase-positive in this case
+        # class Foo:
+        #
+        #     """Docstring."""
+        #
+        #
+        # # comment here
+        # def foo(): pass
+        if docstring:
+            before, _, after = class_.source.partition(docstring)
+            blanks_before = list(map(is_blank, before.split('\n')[:-1]))
+            blanks_after = list(map(is_blank, after.split('\n')[1:]))
+            blanks_before_count = sum(takewhile(bool, reversed(blanks_before)))
+            blanks_after_count = sum(takewhile(bool, blanks_after))
+            if blanks_before_count != 1:
+                yield Error('D203: Expected 1 blank line *before* class '
+                            'docstring, found %s' % blanks_before_count)
+            if not all(blanks_after) and blanks_after_count != 1:
+                yield Error('D204: Expected 1 blank line *after* class '
+                            'docstring, found %s' % blanks_after_count)
+
+    @check_for(Definition)
+    def check_newline_after_last_paragraph(self, definition, docstring):
+        """D209: Put multi-line docstring closing quotes on separate line.
+
+        Unless the entire docstring fits on a line, place the closing
+        quotes on a line by themselves.
+
+        """
+        if docstring:
+            lines = [l for l in eval(docstring).split('\n') if not is_blank(l)]
+            if len(lines) > 1:
+                if docstring.split("\n")[-1].strip() not in ['"""', "'''"]:
+                    return Error('D209: Put multi-line docstring closing '
+                                 'quotes on separate line')
+
+    @check_for(Function)
+    def check_imperative_mood(self, function, docstring):  # def context
+        """D401: First line should be in imperative mood: 'Do', not 'Does'.
+
+        [Docstring] prescribes the function or method's effect as a command:
+        ("Do this", "Return that"), not as a description; e.g. don't write
+        "Returns the pathname ...".
+
+        """
+        if docstring:
+            stripped = eval(docstring).strip()
+            if stripped:
+                first_word = stripped.split()[0]
+                if first_word.endswith('s') and not first_word.endswith('ss'):
+                    return Error('D401: First line should be imperative: '
+                                 '%r, not %r' % (first_word[:-1], first_word))
+
+
+class NumPyChecker(Checker):
+    @check_for(Definition, terminal=True)
+    def check_docstring_missing(self, definition, docstring):
+        """D10{0,1,2,3}: Public definitions should have docstrings.
+
+        All modules should normally have docstrings.  [...] all functions and
+        classes exported by a module should also have docstrings. Public
+        methods (including the __init__ constructor) should also have
+        docstrings.
+
+        Note: Public (exported) definitions are either those with names listed
+              in __all__ variable (if present), or those that do not start
+              with a single underscore.
+
+        """
+        if (not docstring and definition.is_public and
+                definition.name != '__init__' or
+                docstring and is_blank(eval(docstring))):
+            codes = {Module: 'D100', Class: 'D101', NestedClass: 'D101',
+                     Method: 'D102', Function: 'D103', NestedFunction: 'D103'}
+            return Error('%s: Docstring missing' % codes[type(definition)])
+
+    @check_for(Definition)
+    def check_no_blank_before(self, function, docstring):  # def
+        """D20{1,2}: No blank lines allowed around docstring.
+
+        There's no blank line either before or after the docstring.
+
+        """
+        # NOTE: This does not take comments into account.
+        # NOTE: This does not take into account functions with groups of code.
+        if docstring:
+            before, _, after = function.source.partition(docstring)
+            blanks_before = list(map(is_blank, before.split('\n')[:-1]))
+            blanks_after = list(map(is_blank, after.split('\n')[1:]))
+            blanks_before_count = sum(takewhile(bool, reversed(blanks_before)))
+            blanks_after_count = sum(takewhile(bool, blanks_after))
+            if blanks_before_count != 0:
+                yield Error('D201: No blank lines allowed *before* %s '
+                            'docstring, found %s'
+                            % (function.kind, blanks_before_count))
+            if not all(blanks_after) and blanks_after_count != 0:
+                yield Error('D202: No blank lines allowed *after* %s '
+                            'docstring, found %s'
+                            % (function.kind, blanks_after_count))
+
+    @check_for(Definition)
+    def check_newline_after_last_paragraph(self, definition, docstring):
+        """D209: Put multi-line docstring closing quotes on separate line.
+
+        Unless the entire docstring fits on a line, place the closing
+        quotes on a line by themselves, preceeded by a blank line.
+
+        """
+        if docstring:
+            lines = [l for l in eval(docstring).split('\n') if not is_blank(l)]
+            if len(lines) > 1:
+                if (docstring.split("\n")[-1].strip() not in ['"""', "'''"] or
+                        not is_blank(docstring.split("\n")[-2])):
+                    return Error('D209: Put multi-line docstring closing '
+                                 'quotes on separate line preceeded by a '
+                                 'blank line')
+
+    SECTIONS = ['Parameters', 'Attributes', 'Returns', 'Other Parameters',
+                'Raises', 'See Also', 'Notes', 'Examples']
+
+    @check_for(Definition)
+    def check_section_order(self, definition, docstring):
+        """D50{1,2,3}: NumPy docstring sections must be in the right order.
+
+        Also, no special sections should be created.
+
+        """
+        if docstring:
+            lines = [l.strip() for l in eval(docstring).split('\n')]
+            section_lines = [i for i in range(len(lines) - 1)
+                             if len(lines[i]) > 0 and
+                             re(r'[=\-`:\'"~^_*+#<>]{' + str(len(lines[i])) +
+                                r'}$').match(lines[i + 1])]
+            sections = [lines[i] for i in section_lines]
+            for section in sections:
+                if section not in NumPyChecker.SECTIONS:
+                    yield Error('D501: Unknown section %s' % section)
+            if ([section for section in NumPyChecker.SECTIONS
+                 if section in sections] !=
+                [section for section in sections
+                 if section in NumPyChecker.SECTIONS]):
+                yield Error('D502: Sections in wrong order')
+            for i in section_lines:
+                if is_blank(lines[i + 2]):
+                    yield Error('D503: No blank line allowed after section '
+                                'header in docstring, found one after `%s`'
+                                % lines[i])
+
+    @check_for(Definition)
+    def check_line_length(self, definition, docstring):
+        """D504: Docstrings cannot exceed 75 characters."""
+        if docstring:
+            if any(len(line) > 75 for line in docstring.split('\n')):
+                yield Error('D504: Docstring exceeds 75 characters')
 
 
 if __name__ == '__main__':
