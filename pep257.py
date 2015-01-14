@@ -518,7 +518,7 @@ class Checker(object):
             for check in self.checks:
                 terminate = False
                 if isinstance(definition, check._check_for):
-                    error = check(None, definition, definition.docstring)
+                    error = check(definition, definition.docstring)
                     errors = error if hasattr(error, '__iter__') else [error]
                     for error in errors:
                         if error is not None:
@@ -537,8 +537,9 @@ class Checker(object):
 
     @property
     def checks(self):
-        all = [check for check in vars(type(self)).values()
-               if hasattr(check, '_check_for')]
+        all = [getattr(self, check) for check in dir(self)
+               if check != 'checks' and
+               hasattr(getattr(self, check), '_check_for')]
         return sorted(all, key=lambda check: not check._terminal)
 
     @check_for(Definition)
