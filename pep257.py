@@ -871,8 +871,8 @@ class NumPyChecker(Checker):
                                  'quotes on separate line preceeded by a '
                                  'blank line')
 
-    SECTIONS = ['Parameters', 'Attributes', 'Returns', 'Other Parameters',
-                'Raises', 'See Also', 'Notes', 'Examples']
+    SECTIONS = ['Parameters', 'Attributes', 'Returns', 'Yields',
+                'Other Parameters', 'Raises', 'See Also', 'Notes', 'Examples']
 
     @check_for(Definition)
     def check_section_order(self, definition, docstring):
